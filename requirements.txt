@@ -1,0 +1,12 @@
+# Runtime dependencies for the Seat Finder prototype.
+#
+# These are the versions the reference run used (Python 3.15.1, Windows).
+# The torch wheel below is the CPU build published on PyPI; see the README for
+# the optional CUDA 12.8 build for an RTX 5060 Ti.
+torch==2.15.0
+torchvision==0.29.2
+ultralytics==8.4.215
+opencv-python==5.1.0.95
+numpy==2.5.5
+# ByteTrack association used by ultralytics tracking
+lap==0.5.14

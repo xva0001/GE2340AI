@@ -1,0 +1,43 @@
+(capture from report)
+ The camera used to send images out, the
+server receives these images, and a real-time computer vision model distinguish the relative position
+between humans and chairs, such as YOLO v10 (3) can provide object detection, to detect human
+bodies and personal belongings. The system counts each seat dynamically, and calculates Intersection
+over Union (IoU) in a set of object bunding and a set of seats(4). The system categorizes seats into
+three states, which is Empty (no human and object), Occupied (human presented), Occupancy with
+objects (belongings present). The required resources are an IP cameras (or CCTV), which can upload
+image data to a server, and a computer which has an advanced GPU (RTX 5060) to run the object
+detection model. The data are an annotated image dataset covering various lighting conditions, angles,
+occlusions, and personal items. Step 1 is image acquisition and preprocessing, the images received
+from the cameras and chop the images to fit a rest area. Step 2 is model processing, the server runs
+the YOLO models and get bounding boxes and confidence scores. Step 3 is data mapping, map the
+result and the image, and update the seat state. Step 4 is noise filtering, the result may be affected
+by passersby, this need to build up a metric to filter. This approach fully uses existing venue CCTV
+infrastructure, to reduce the hardware cost. The server processing ensures zero video storage or
+transmission, fully addressing user privacy concerns(2) and GDPR compliance. So, the practical
+feasibility of this approach is high.
+
+
+----
+In terms of expected impact, the Seat Finder system provides practical benefits to the campus
+community. Students always waste valuable time walking around crowded study areas finding for
+3 available seats, during midterms and final exam weeks. By offering a real-time chair- labeled video,
+students reduces searching time for seat availability. This project feature is in handling of "ghost
+occupancy" where unattended belongings like backpacks or laptops reserve a seat without a person
+present. Traditional method only focus on distinguish between Empty (no human and no objects),
+Occupied (a human is present), but we notify many people use their item to occupy seat, the system
+enables this ability to provides precise seat-level status.
+
+For the data collection and implementation plan, the project will follow a structured technical pipeline.
+Data collection involves gathering localized image datasets from campus study spaces across different
+time slots, covering different lighting conditions, seating densities, and camera angles. these images
+will be annotated by human to label humans, chairs and personal items. The implementation pipeline
+starts with dataset preparation and pre-processing, followed by transfer learning and fine-tuning using
+PyTorch and YOLO object detection frameworks(6; 7). After training the model will be deployed on
+the server, the model will handle a video (or video stream) as input, the output is the original video
+(or video stream) with labeled layer.
+---
+(end of the capture)
+(use local env python 3.15.1 and venv)
+data collected in ./data 
+

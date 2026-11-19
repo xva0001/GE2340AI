@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# Model weights (auto-downloaded on first run)
+*.pt
+*.onnx
+
+# Run outputs
+runs/
+
+# Local scratch
+_tmp/
+.ultralytics/
