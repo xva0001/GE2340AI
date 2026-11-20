@@ -70,6 +70,18 @@ class AssociationTests(unittest.TestCase):
         result = associate([seat()], [], [huge], self.cfg)
         self.assertEqual(result.cells[(1, 0)].objects, [])
 
+    def test_object_on_a_table_is_not_a_seat_object(self):
+        laptop = item("laptop", (120, 200, 170, 280), class_id=63)
+        table = (100, 190, 240, 300)
+        result = associate([seat()], [], [laptop], self.cfg, [table])
+        self.assertEqual(result.cells[(1, 0)].objects, [])
+
+    def test_object_off_the_table_still_counts(self):
+        bag = item("backpack", (120, 200, 170, 280))
+        table = (600, 600, 800, 700)
+        result = associate([seat()], [], [bag], self.cfg, [table])
+        self.assertEqual(result.cells[(1, 0)].objects, ["backpack"])
+
     def test_couch_cells_split_capacity(self):
         couch = seat(box=(0, 100, 300, 300), capacity=3, kind="couch")
         left = person((10, 50, 90, 290))

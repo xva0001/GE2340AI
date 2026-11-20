@@ -1,0 +1,8 @@
+--index-url https://download.pytorch.org/whl/cu130
+
+# CUDA build used on the RTX 5060 Ti (sm_120), Python 3.15.1.
+# PyPI's torch 2.15.0 is CPU-only and the cu128 index has no cp315 wheel;
+# cu130 is the index that publishes CPython 3.15 CUDA wheels.
+# Install requirements.txt first, then this file to swap the CPU build out.
+torch==2.14.1+cu130
+torchvision==0.29.1+cu130

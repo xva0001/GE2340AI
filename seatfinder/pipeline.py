@@ -12,7 +12,16 @@ import numpy as np
 from .association import CellObservation, associate
 from .config import AppConfig, RenderConfig
 from .detector import Detection, Detector, split_by_role
-from .geometry import Box, bottom_center, distance, height, point_inside, width
+from .geometry import (
+    Box,
+    area,
+    bottom_center,
+    containment,
+    distance,
+    height,
+    point_inside,
+    width,
+)
 from .renderer import HudInfo, Renderer
 from .state import CellStatus, SeatState, SeatStateMachine, raw_state
 from .tracking import GlobalMotion, PersonHistory, SeatTracker
@@ -68,6 +77,8 @@ class VideoPipeline:
         self._timelines: list[TimelineEntry] = []
         self._fps: float = 30.0
         self._object_memory: dict[tuple[int, int], tuple[int, tuple[str, ...]]] = {}
+        self._recent_persons: dict[int, tuple[int, Detection]] = {}
+        self._synthetic_anchor: dict[int, tuple[float, float]] = {}
 
     def run(
         self,
@@ -83,6 +94,8 @@ class VideoPipeline:
         machine = SeatStateMachine(self.cfg.temporal)
         self._timelines = []
         self._object_memory = {}
+        self._recent_persons = {}
+        self._synthetic_anchor = {}
 
         with VideoReader(video_path) as reader:
             info = reader.info
@@ -211,7 +224,8 @@ class VideoPipeline:
     ) -> dict[tuple[int, int], CellStatus]:
         detections = self.detector.infer(frame)
         persons, furniture, belongings = split_by_role(detections)
-        self._persons = persons
+        persons = self._dedupe_persons(persons)
+        self._persons = self._remember_persons(persons, index)
         self._belongings = belongings
 
         motion.update(persons, frame.shape[1])
@@ -220,19 +234,32 @@ class VideoPipeline:
         seats.reset_frame_flags()
         person_widths = [width(p.box) for p in persons if width(p.box) > 1]
         live = seats.update(furniture, index, person_widths)
-        furniture_boxes = [s.box for s in live] + [
-            d.box for d in detections if d.label == "dining table"
-        ]
+        table_boxes = [d.box for d in detections if d.label == "dining table"]
+        furniture_boxes = [s.box for s in live] + table_boxes
 
         result = associate(
-            [s for s in live if not s.synthetic], persons, belongings, self.cfg.seat
+            [s for s in live if not s.synthetic],
+            persons,
+            belongings,
+            self.cfg.seat,
+            table_boxes,
         )
 
         active_synthetic: set[int] = set()
+        anchor_radius = self.cfg.inferred.anchor_fraction * frame.shape[1]
+        offset = motion.offset
         for person in result.unmatched_persons:
             if person.track_id is None:
                 continue
-            if not self._is_seated_candidate(
+            feet = bottom_center(person.box)
+            compensated = (feet[0] - offset[0], feet[1] - offset[1])
+            anchor = self._synthetic_anchor.get(person.track_id)
+            near_anchor = (
+                anchor is not None
+                and distance(compensated, anchor) <= anchor_radius
+                and seats.synthetic_for(person.track_id) is not None
+            )
+            if not near_anchor and not self._is_seated_candidate(
                 person, history, still_pixels, min_still,
                 furniture_boxes, result.cells,
             ):
@@ -240,6 +267,7 @@ class VideoPipeline:
             seat = seats.upsert_synthetic(
                 person.track_id, person.box, index, person.confidence
             )
+            self._synthetic_anchor.setdefault(person.track_id, compensated)
             active_synthetic.add(person.track_id)
             result.cells[(seat.seat_id, 0)] = CellObservation(
                 seat_id=seat.seat_id,
@@ -250,6 +278,9 @@ class VideoPipeline:
             )
 
         seats.prune_synthetic(active_synthetic, index)
+        for track_id in list(self._synthetic_anchor):
+            if seats.synthetic_for(track_id) is None:
+                del self._synthetic_anchor[track_id]
 
         statuses: dict[tuple[int, int], CellStatus] = {}
         for seat in seats.all_seats():
@@ -279,7 +310,71 @@ class VideoPipeline:
                     )
 
         machine.prune({s.seat_id for s in seats.all_seats()}, index)
+        return self._paint_recent(statuses, seats, machine, index)
+
+    def _paint_recent(
+        self,
+        statuses: dict[tuple[int, int], CellStatus],
+        seats: SeatTracker,
+        machine: SeatStateMachine,
+        index: int,
+    ) -> dict[tuple[int, int], CellStatus]:
+        """Keep recently seen seats on screen through a few missed detections.
+
+        The detector drops a chair for a frame or two, and especially an
+        inferred seat disappears whenever its person fails the "is still" test
+        for one frame.  Painting the last known state for a short grace period
+        removes that blinking without changing the state machine.
+        """
+        grace = self.cfg.seat.paint_grace_frames
+        for seat in seats.all_seats():
+            for cell_index, _ in enumerate(seat.cells):
+                key = (seat.seat_id, cell_index)
+                if key in statuses:
+                    continue
+                status = machine.get(key)
+                if status is not None and index - status.seen_frame <= grace:
+                    statuses[key] = status
         return statuses
+
+    def _dedupe_persons(self, persons: list[Detection]) -> list[Detection]:
+        """Drop a person box that is really the same person tracked twice.
+
+        ByteTrack sometimes keeps a full-body box and an upper-body box for one
+        person; both would otherwise get their own inferred seat.
+        """
+        kept: list[Detection] = []
+        for person in sorted(persons, key=lambda d: area(d.box), reverse=True):
+            if any(
+                containment(person.box, other.box)
+                >= self.cfg.seat.person_duplicate_containment
+                for other in kept
+            ):
+                continue
+            kept.append(person)
+        return kept
+
+    def _remember_persons(
+        self, persons: list[Detection], index: int
+    ) -> list[Detection]:
+        """Keep a person box visible for a couple of frames after a miss."""
+        grace = self.renderer.cfg.person_grace_frames
+        for person in persons:
+            if person.track_id is not None:
+                self._recent_persons[person.track_id] = (index, person)
+        stale = [
+            track_id
+            for track_id, (seen, _) in self._recent_persons.items()
+            if index - seen > grace
+        ]
+        for track_id in stale:
+            del self._recent_persons[track_id]
+        current = {p.track_id for p in persons if p.track_id is not None}
+        return list(persons) + [
+            detection
+            for track_id, (_, detection) in self._recent_persons.items()
+            if track_id not in current
+        ]
 
     def _remember_objects(
         self,

@@ -21,9 +21,9 @@ data/*.mp4  ->  YOLO detections  ->  seat inventory  ->  per-seat state  ->  ann
 | Input | video files (`.mp4`, `.mov`, `.avi`, `.mkv`); a folder is processed in one run |
 | Output | annotated `.mp4`, annotated `.jpg` stills, `seats.csv`, `frames.csv`, `json/<video>.json`, `summary.json` |
 | Model | Ultralytics YOLOv10s (COCO weights, auto-downloaded on first run) |
-| Runtime | Python 3.15.1 + `.venv`, CPU ~8 fps at `imgsz=1280` (GPU optional, see below) |
+| Runtime | Python 3.15.1 + `.venv`; ~8 fps on CPU, ~25-35 fps on the RTX 5060 Ti at `imgsz=1280` |
 | States | `empty`, `occupied`, `ghost` |
-| Tests | 50 unit/integration tests, no model needed |
+| Tests | 55 unit/integration tests, no model needed |
 
 ---
 
@@ -150,25 +150,37 @@ That deliberately rejects items on a table that a loose couch box overlaps.
 
 ### 4. Noise filtering (`tracking.py`, `state.py`)
 
-The plan asks for a metric to filter passers-by. Four filters are applied:
+The plan asks for a metric to filter passers-by. Five filters are applied:
 
 1. **Motion relative to the scene.** `GlobalMotion` estimates camera movement
    as the median displacement of tracked people and subtracts it, so stillness
    works on handheld footage. With fewer than three people the median would be
    one person's own walking, so compensation is disabled.
-2. **Stillness.** A person must hold position within 1.5% of the frame width for
-   0.6 s before an inferred seat is created.
+2. **Stillness.** A person must hold position within 2.5% of the frame width for
+   0.6 s before an inferred seat is created. The measure is the 75th percentile
+   of the drift, not the maximum, so one noisy box does not end the streak.
+   Once the seat exists, it is anchored: the person only has to stay near that
+   anchor, so posture shifts no longer make the seat blink away.
 3. **Evidence hysteresis.** A seat changes state only after `confirm_frames`
    consecutive frames (5 for ghost, since bags are static), and needs
    `release_frames` to return to empty. A single dropped detection costs one
    unit of evidence instead of resetting it.
 4. **Object memory.** Belongings flicker in and out of the detector; a sighting
    stays valid for `object_memory_frames` so ghost occupancy can accumulate.
+5. **Display smoothing.** A seat keeps being drawn with its last state for
+   `paint_grace_frames` (4) after the detector loses it, and person boxes for
+   `person_grace_frames` (2), so labels stop blinking frame to frame. Labels
+   also step upwards instead of printing over a neighbouring seat.
 
 ### 5. Rendering and reporting (`renderer.py`, `summary.py`)
 
-Green = empty, red = occupied, amber = belongings only. The HUD shows live
-counts; inferred seats are drawn with a thin box and a `~P` label.
+Green = empty, red = occupied, amber = belongings only. The HUD shows the clip
+position, live counts and processing speed; inferred seats are drawn with a
+thin box and a `~P` label.
+
+The HUD is drawn at a fixed minimum text size rather than scaled with the
+frame, so it stays readable on 480p recordings, and labels are nudged upwards
+when they would print over a neighbouring seat.
 
 ---
 
@@ -188,60 +200,64 @@ backpack or laptop holding a seat while its owner is elsewhere.
 ## Results on `./data`
 
 The eight clips were processed with the default settings (`yolov10s.pt`,
-`imgsz=1280`, CPU). Whole run: 2,356 frames in 292 s, about 8 fps.
+`imgsz=1280`): 2,356 frames in 292 s on the CPU and 78 s on the RTX 5060 Ti.
+The figures below are from the GPU run (`runs/demo-gpu/`); the CPU run gives the
+same counts within rounding.
 
 | Clip | Scene | Frames | Seats | Empty | Occupied | Objects | Occupancy |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `20261026_154828.mp4` | lounge with sofas, fixed camera | 248 | 8.7 | 3.4 | 5.3 | 0.0 | 61% |
-| `20261026_222134.mp4` | canteen, 1080p, fixed | 187 | 28.1 | 19.4 | 8.7 | 0.0 | 31% |
-| `20261113_084813.mp4` | canteen, handheld and blurred | 486 | 4.2 | 4.2 | 0.0 | 0.0 | 0% |
-| `VID-20261113-WA0002.mp4` | outdoor terrace, daytime | 228 | 8.9 | 7.6 | 1.3 | 0.0 | 15% |
-| `VID-20261118-WA0000.mp4` | canteen, 480p | 270 | 20.5 | 14.5 | 6.1 | 0.0 | 30% |
-| `VID-20261118-WA0006.mp4` | bar counter, chairs empty | 315 | 6.1 | 6.1 | 0.0 | 0.0 | 0% |
-| `Video Project.mp4` | outdoor terrace, night | 290 | 8.0 | 5.8 | 2.3 | 0.0 | 28% |
-| `WhatsApp Video …20.49.28.mp4` | lounge with sofas, night | 332 | 6.1 | 4.9 | 1.2 | 0.0 | 20% |
+| `20261026_154828.mp4` | lounge with sofas, fixed camera | 248 | 9.5 | 4.1 | 5.4 | 0.0 | 57% |
+| `20261026_222134.mp4` | canteen, 1080p, fixed | 187 | 33.9 | 23.7 | 10.2 | 0.0 | 30% |
+| `20261113_084813.mp4` | canteen, handheld and blurred | 486 | 5.1 | 5.1 | 0.0 | 0.0 | 0% |
+| `VID-20261113-WA0002.mp4` | outdoor terrace, daytime | 228 | 10.6 | 9.2 | 1.4 | 0.0 | 13% |
+| `VID-20261118-WA0000.mp4` | canteen, 480p | 270 | 25.2 | 17.7 | 7.5 | 0.0 | 30% |
+| `VID-20261118-WA0006.mp4` | bar counter, chairs empty | 315 | 6.6 | 6.6 | 0.0 | 0.0 | 1% |
+| `Video Project.mp4` | outdoor terrace, night | 290 | 8.5 | 6.2 | 2.3 | 0.0 | 27% |
+| `WhatsApp Video …20.49.28.mp4` | lounge with sofas, night | 332 | 6.8 | 5.5 | 1.3 | 0.0 | 19% |
 
 "Seats / empty / occupied / objects" are frame averages; occupancy is mean
 occupied seats divided by mean tracked seats.
 
 ![Canteen at 1080p](docs/canteen_1080p.jpg)
-*Canteen clip: 33 seats tracked, 22 empty, 11 occupied.*
+*Canteen clip: 33 seats tracked in this frame, 24 empty, 9 occupied.*
 
 ![Lounge with sofas](docs/lounge_sofas.jpg)
-*Sofas are split into seat cells; `~P33` is a seat inferred from a person whose
+*Sofas are split into seat cells; `~P5` is a seat inferred from a person whose
 chair was never detected.*
 
-![Night lounge](docs/night_lounge.jpg)
-*Night lounge. The person walking past is tracked (`P7`) but does not create a
-seat.*
+![Canteen at 480p](docs/canteen_480p.jpg)
+*A 480p clip: the HUD keeps its own text size, so counts and speed stay
+readable at low resolution.*
 
 ### What the numbers say
 
-* **Empty vs occupied works.** The canteen clip tracks 28 seats on average and
-  separates 19 empty from 9 occupied; the empty bar counter reports every seat
+* **Empty vs occupied works.** The canteen clip tracks 34 seats on average and
+  separates 24 empty from 10 occupied; the empty bar counter reports every seat
   empty, which is correct.
 * **Sofas need splitting.** The lounge clip has only four sofas in view, yet
-  the inventory is 8.7 seats because each couch is divided into two cells.
+  the inventory is 9.5 seats because each couch is divided into two cells and
+  seated people whose chair is hidden get an inferred seat.
 * **Handheld blur hurts.** `20261113_084813.mp4` is a fast pan with heavy
   motion blur; the detector finds 4 chairs in a frame that clearly holds
   dozens, so the prototype under-reports rather than guessing.
 * **Ghost occupancy did not trigger** on these clips. Bags in the footage are
   either carried by the person sitting next to them (correctly treated as not
-  left behind) or lying on tables (correctly outside any seat). A first version
-  did report a "ghost" laptop, but the object turned out to be on a table that a
-  loose couch box overlapped — which is why the containment rule was tightened
-  to 70%. The ghost path itself is covered by an end-to-end test
-  (`tests/test_pipeline_flow.py`): a chair becomes occupied, the person leaves,
-  a backpack stays, and the seat state becomes `ghost`. On data with genuinely
-  abandoned bags, `--belonging-conf` is the first knob to lower.
+  left behind) or lying on tables (correctly outside any seat). Two earlier
+  versions did report a "ghost" laptop; both times the object was on a coffee
+  table that a loose couch box happened to cover. That is why a belonging now
+  has to be 70% inside the cell, sit in the lower half of the seat box, and not
+  be inside a detected table. The ghost path itself is covered by an end-to-end
+  test (`tests/test_pipeline_flow.py`): a chair becomes occupied, the person
+  leaves, a backpack stays, and the seat state becomes `ghost`. On data with
+  genuinely abandoned bags, `--belonging-conf` is the first knob to lower.
 
 ### Reproducing
 
 ```powershell
-.venv\Scripts\python -m seatfinder --input data --output runs\demo
+.venv\Scripts\python -m seatfinder --input data --output runs\demo-gpu --device 0
 ```
 
-All outputs of the run above are in `runs/demo/`.
+All outputs of the run above are in `runs/demo-gpu/`.
 
 ---
 
@@ -262,8 +278,8 @@ All outputs of the run above are in `runs/demo/`.
   a person are matched in image space.
 * **Handheld/blurred clips** (e.g. `20261113_084813.mp4`) produce few
   detections; the prototype then reports very few seats rather than guessing.
-* **Not real-time on CPU.** ~8 fps at 1280. A CUDA build of torch makes the
-  same code several times faster (see below).
+* **Frame rate depends on the device.** ~8 fps on CPU at 1280, ~22-33 fps
+  with the CUDA build (see below); only the GPU build is comfortably real-time.
 * **Chairs with laminated signs** are common here; `book` is therefore excluded
   from the belonging classes, since the signs were reliably misdetected as
   books and made every seat look occupied.
@@ -285,14 +301,23 @@ at the top of `seatfinder/config.py`; nothing else needs to change.
 
 ### Optional GPU build
 
-The default `torch` wheel is CPU-only. For the RTX 5060 Ti:
+The default `torch` wheel on PyPI is CPU-only, and the CUDA 12.8 index has no
+CPython 3.15 wheel. The working combination for this machine is the CUDA 13.0
+index:
 
 ```powershell
-.venv\Scripts\python -m pip install --force-reinstall torch==2.15.0 torchvision==0.29.2 `
-    --index-url https://download.pytorch.org/whl/cu128
+.venv\Scripts\python -m pip install -r requirements-gpu.txt
 ```
 
-The pipeline picks CUDA up automatically (`--device 0` to force it).
+Verified here with driver 616.56: `torch.cuda.is_available()` is `True` on the
+RTX 5060 Ti (sm_120), one 1280px inference takes ~14 ms, and the full pipeline
+runs at ~33 fps on a 480p clip and ~22 fps on a 1080p clip (rendering and video
+encoding included). The pipeline picks CUDA up automatically; use
+`--device 0` to force it and `--device cpu` to stay on the CPU.
+
+Re-running `requirements.txt` afterwards installs the CPU `torch==2.15.0` again
+and silently takes the GPU build out, so install the two files in the order
+above.
 
 ---
 
@@ -302,10 +327,10 @@ The pipeline picks CUDA up automatically (`--device 0` to force it).
 .venv\Scripts\python -m unittest discover -s tests -t . -v
 ```
 
-50 tests cover box geometry, seat matching, capacity estimation, the state
-machine's hysteresis, camera-motion compensation, and an end-to-end run through
-the pipeline with a scripted detector (empty -> occupied -> ghost). None of them
-loads a model or needs a GPU.
+55 tests cover box geometry, seat matching, capacity estimation, the state
+machine's hysteresis, camera-motion compensation, HUD rendering at 480p and
+1080p, and an end-to-end run through the pipeline with a scripted detector
+(empty -> occupied -> ghost). None of them loads a model or needs a GPU.
 
 ---
 
@@ -324,7 +349,7 @@ seatfinder/
 ├─ pipeline.py     per-video orchestration
 ├─ summary.py      JSON summaries and console table
 └─ cli.py          argument parsing
-tests/             50 unit and integration tests
+tests/             55 unit and integration tests
 ```
 
 ---

@@ -67,12 +67,14 @@ def associate(
     persons: list[Detection],
     belongings: list[Detection],
     cfg: SeatConfig,
+    table_boxes: list[Box] | None = None,
 ) -> AssociationResult:
     """Assign people and left-behind objects to seat cells.
 
     A cell takes at most one person.  A synthetic (person-derived) seat is
     always occupied by the person it was inferred from.
     """
+    tables = table_boxes or []
     cells: dict[tuple[int, int], CellObservation] = {}
     for seat in seats:
         for index, box in enumerate(seat.cells):
@@ -110,6 +112,11 @@ def associate(
 
     for item in belongings:
         if is_carried(item, persons, cfg):
+            continue
+        if any(
+            containment(item.box, table) >= cfg.belonging_table_ratio
+            for table in tables
+        ):
             continue
         item_center = center(item.box)
         item_area = area(item.box)

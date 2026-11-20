@@ -11,6 +11,9 @@ __pycache__/
 # Run outputs
 runs/
 
-# Local scratch
+# Local scratch / tool caches
 _tmp/
+.pipwork/
 .ultralytics/
+Ultralytics/
+torchinductor_root/

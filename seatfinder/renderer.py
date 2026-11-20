@@ -20,7 +20,6 @@ COLORS = {
 }
 PERSON_COLOR = (255, 150, 60)
 OBJECT_COLOR = (255, 255, 0)
-TEXT_COLOR = (245, 245, 245)
 PANEL_COLOR = (28, 28, 28)
 
 STATE_LABEL = {
@@ -28,6 +27,11 @@ STATE_LABEL = {
     SeatState.OCCUPIED: "OCCUPIED",
     SeatState.GHOST: "OBJECTS",
 }
+
+
+def _overlaps(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> bool:
+    """True when two pixel rectangles intersect."""
+    return not (a[2] <= b[0] or b[2] <= a[0] or a[3] <= b[1] or b[3] <= a[1])
 
 
 @dataclass
@@ -50,6 +54,7 @@ class Renderer:
 
     def __init__(self, cfg: RenderConfig) -> None:
         self.cfg = cfg
+        self._labels: list[tuple[int, int, int, int]] = []
 
     def draw(
         self,
@@ -60,15 +65,20 @@ class Renderer:
         belongings: list[Detection],
         hud: HudInfo,
     ) -> np.ndarray:
-        scale = float(np.clip(frame.shape[0] / 720.0, 0.5, 1.7))
+        self._labels = []
+        # HUD text is sized in real pixels with a floor, so a 480p clip stays
+        # legible instead of shrinking with the frame.
+        height_px = frame.shape[0]
+        hud_scale = float(np.clip(height_px / 740.0, 0.62, 1.15))
+        label_scale = max(0.40, hud_scale * 0.58)
         if self.cfg.show_persons:
-            self._draw_detections(frame, persons, PERSON_COLOR, scale, prefix="P")
+            self._draw_detections(frame, persons, PERSON_COLOR, label_scale, prefix="P")
         if self.cfg.show_objects:
-            self._draw_detections(frame, belongings, OBJECT_COLOR, scale, prefix="")
+            self._draw_detections(frame, belongings, OBJECT_COLOR, label_scale, prefix="")
         for seat in seats:
-            self._draw_seat(frame, seat, statuses, scale)
+            self._draw_seat(frame, seat, statuses, label_scale)
         if self.cfg.show_hud:
-            self._draw_hud(frame, hud, scale)
+            self._draw_hud(frame, hud, hud_scale)
         return frame
 
     # -- internals ---------------------------------------------------------
@@ -77,7 +87,7 @@ class Renderer:
         frame: np.ndarray,
         seat: Seat,
         statuses: dict[tuple[int, int], CellStatus],
-        scale: float,
+        label_scale: float,
     ) -> None:
         cells = seat.cells
         for index, box in enumerate(cells):
@@ -96,7 +106,7 @@ class Renderer:
             if height(box) < self.cfg.min_label_height:
                 continue
             label = self._seat_label(seat, index, status)
-            self._label(frame, box, label, color, scale * 0.42, above=True)
+            self._label(frame, box, label, color, label_scale, above=True)
 
     def _seat_label(self, seat: Seat, index: int, status: CellStatus) -> str:
         if seat.synthetic:
@@ -115,7 +125,7 @@ class Renderer:
         frame: np.ndarray,
         detections: list[Detection],
         color: tuple[int, int, int],
-        scale: float,
+        label_scale: float,
         prefix: str,
     ) -> None:
         for det in detections:
@@ -123,54 +133,72 @@ class Renderer:
             if height(det.box) < 36:
                 continue
             name = det.label if not prefix else f"{prefix}{det.track_id or '?'}"
-            self._label(frame, det.box, name, color, scale * 0.34, above=False)
+            self._label(frame, det.box, name, color, label_scale * 0.85, above=False)
 
-    def _draw_hud(self, frame: np.ndarray, hud: HudInfo, scale: float) -> None:
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        line_h = int(22 * scale)
-        pad = int(10 * scale)
-        width = int(330 * scale)
-        height_px = int(96 * scale) if self.cfg.show_legend else int(52 * scale)
-        x0, y0 = pad, pad
+    def _draw_hud(self, frame: np.ndarray, hud: HudInfo, fs: float) -> None:
+        font = cv2.FONT_HERSHEY_DUPLEX
+        pad = max(7, int(round(9 * fs)))
+        gap = max(4, int(round(6 * fs)))
+        chip = max(9, int(round(10 * fs)))
+        margin = max(6, int(round(8 * fs)))
+        bold = 2 if fs >= 0.9 else 1
 
-        self._fill_alpha_panel(frame, (x0, y0, x0 + width, y0 + height_px), 0.55)
-
-        title = "Seat Finder"
+        title = "SEAT FINDER"
+        (title_w, title_h), title_b = cv2.getTextSize(title, font, fs, bold)
+        counter = f"frame {hud.frame_index}"
         if hud.total_frames:
-            title += f"  frame {hud.frame_index}/{hud.total_frames}"
-        else:
-            title += f"  frame {hud.frame_index}"
-        cv2.putText(frame, title, (x0 + 10, y0 + line_h),
-                    font, scale * 0.45, TEXT_COLOR, 1, cv2.LINE_AA)
+            counter += f"/{hud.total_frames}"
+        (count_w, _), _ = cv2.getTextSize(counter, font, fs * 0.8, 1)
+        line1_h = title_h + title_b
+        line1_w = title_w + gap * 2 + count_w
 
-        summary = (
-            f"seats {hud.seats}   empty {hud.empty}   "
-            f"occupied {hud.occupied}   objects {hud.ghost}"
+        counts = (
+            (SeatState.EMPTY, hud.empty, "empty"),
+            (SeatState.OCCUPIED, hud.occupied, "occupied"),
+            (SeatState.GHOST, hud.ghost, "objects"),
         )
-        cv2.putText(frame, summary, (x0 + 10, y0 + line_h * 2),
-                    font, scale * 0.42, TEXT_COLOR, 1, cv2.LINE_AA)
+        parts: list[tuple[tuple[int, int, int], str, int, int]] = []
+        for state, number, label in counts:
+            text = f"{number} {label}"
+            (text_w, text_h), text_b = cv2.getTextSize(text, font, fs * 0.85, 1)
+            parts.append((COLORS[state], text, text_w, text_h + text_b))
+        line2_h = max(part[3] for part in parts)
+        line2_w = sum(chip + gap // 2 + part[2] for part in parts) + gap * (len(parts) - 1)
 
-        time_text = f"t={hud.time_s:5.2f}s"
+        time_text = f"{hud.time_s:.2f} s"
         if hud.fps:
-            time_text += f"   {hud.fps:4.1f} fps"
-        cv2.putText(frame, time_text, (x0 + 10, y0 + line_h * 3),
-                    font, scale * 0.40, (200, 200, 200), 1, cv2.LINE_AA)
+            time_text += f"   {hud.fps:.1f} fps"
+        (time_w, time_h), time_b = cv2.getTextSize(time_text, font, fs * 0.75, 1)
 
-        if not self.cfg.show_legend:
-            return
-        entries = [
-            (SeatState.EMPTY, "empty seat"),
-            (SeatState.OCCUPIED, "person seated"),
-            (SeatState.GHOST, "belongings only"),
-        ]
-        y = y0 + line_h * 3 + int(14 * scale)
-        for state, text in entries:
-            cv2.rectangle(frame, (x0 + 12, y - int(7 * scale)),
-                          (x0 + 12 + int(10 * scale), y + int(3 * scale)),
-                          COLORS[state], -1)
-            cv2.putText(frame, text, (x0 + 12 + int(18 * scale), y + int(2 * scale)),
-                        font, scale * 0.36, TEXT_COLOR, 1, cv2.LINE_AA)
-            y += int(15 * scale)
+        content_w = max(line1_w, line2_w, time_w)
+        panel_w = content_w + pad * 2
+        panel_h = pad * 2 + line1_h + gap + line2_h + gap + time_h + time_b
+        x0, y0 = margin, margin
+
+        self._fill_alpha(frame, (x0, y0, x0 + panel_w, y0 + panel_h), PANEL_COLOR, 0.78)
+        cv2.rectangle(frame, (x0, y0), (x0 + panel_w, y0 + panel_h),
+                      (95, 95, 95), 1, cv2.LINE_AA)
+
+        title_y = y0 + pad + title_h
+        cv2.putText(frame, title, (x0 + pad, title_y), font, fs,
+                    (255, 255, 255), bold, cv2.LINE_AA)
+        cv2.putText(frame, counter, (x0 + panel_w - pad - count_w, title_y), font,
+                    fs * 0.8, (185, 185, 185), 1, cv2.LINE_AA)
+
+        counts_y = y0 + pad + line1_h + gap
+        x = x0 + pad
+        chip_y = counts_y + (line2_h - chip) // 2
+        for color, text, text_w, text_h in parts:
+            cv2.rectangle(frame, (x, chip_y), (x + chip, chip_y + chip), color, -1)
+            cv2.rectangle(frame, (x, chip_y), (x + chip, chip_y + chip),
+                          (25, 25, 25), 1, cv2.LINE_AA)
+            cv2.putText(frame, text, (x + chip + gap // 2, counts_y + text_h - 3),
+                        font, fs * 0.85, (240, 240, 240), 1, cv2.LINE_AA)
+            x += chip + gap // 2 + text_w + gap
+
+        time_y = counts_y + line2_h + gap + time_h
+        cv2.putText(frame, time_text, (x0 + pad, time_y), font, fs * 0.75,
+                    (190, 190, 190), 1, cv2.LINE_AA)
 
     # -- primitives --------------------------------------------------------
     @staticmethod
@@ -194,28 +222,32 @@ class Renderer:
         overlay[:] = color
         cv2.addWeighted(overlay, alpha, roi, 1.0 - alpha, 0.0, roi)
 
-    @staticmethod
-    def _fill_alpha_panel(frame: np.ndarray, box: Box,
-                          alpha: float) -> None:
-        Renderer._fill_alpha(frame, box, PANEL_COLOR, alpha)
-
-    @staticmethod
-    def _label(frame: np.ndarray, box: Box, text: str,
+    def _label(self, frame: np.ndarray, box: Box, text: str,
                color: tuple[int, int, int], font_scale: float,
                above: bool) -> None:
-        font = cv2.FONT_HERSHEY_SIMPLEX
+        font = cv2.FONT_HERSHEY_DUPLEX
         thickness = 1
         (tw, th), baseline = cv2.getTextSize(text, font, font_scale, thickness)
         h, w = frame.shape[:2]
-        x1 = int(round(box[0]))
+        x = int(round(box[0]))
         if above:
-            y = max(0, int(round(box[1])) - baseline - 2)
-            x = x1
+            top = int(round(box[1])) - th - baseline - 4
         else:
-            y = min(h - 2, int(round(box[1])) + th + 2)
-            x = x1
-        x = max(0, min(x, w - tw - 4))
-        cv2.rectangle(frame, (x, y - th - baseline), (x + tw + 4, y + baseline),
-                      color, -1)
-        cv2.putText(frame, text, (x + 2, y - baseline // 2), font, font_scale,
-                    (20, 20, 20), thickness, cv2.LINE_AA)
+            top = int(round(box[1])) + 3
+        top = max(0, min(top, h - th - baseline - 3))
+        x = max(0, min(x, w - tw - 8))
+
+        # Nudge a label upwards while it would cover one already drawn, so
+        # neighbouring seats stay readable instead of printing over each other.
+        step = th + baseline + 3
+        for _ in range(4):
+            rect = (x, top, x + tw + 6, top + th + baseline + 2)
+            if not any(_overlaps(rect, other) for other in self._labels):
+                break
+            if top - step < 0:
+                break
+            top -= step
+        self._labels.append(rect)
+        cv2.rectangle(frame, (rect[0], rect[1]), (rect[2], rect[3]), color, -1)
+        cv2.putText(frame, text, (x + 3, top + th + 1), font, font_scale,
+                    (15, 15, 15), thickness, cv2.LINE_AA)

@@ -1,8 +1,10 @@
 # Runtime dependencies for the Seat Finder prototype.
 #
 # These are the versions the reference run used (Python 3.15.1, Windows).
-# The torch wheel below is the CPU build published on PyPI; see the README for
-# the optional CUDA 12.8 build for an RTX 5060 Ti.
+# The torch wheel below is the CPU build published on PyPI. For CUDA on the
+# RTX 5060 Ti (sm_120), the working combination is the CUDA 13.0 index:
+#   torch==2.14.1+cu130 torchvision==0.29.1+cu130
+#   --index-url https://download.pytorch.org/whl/cu130
 torch==2.15.0
 torchvision==0.29.2
 ultralytics==8.4.215

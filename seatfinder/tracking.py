@@ -217,6 +217,10 @@ class SeatTracker:
         seat.observed = True
         return seat
 
+    def synthetic_for(self, track_id: int) -> Seat | None:
+        """The inferred seat belonging to a person track, if any."""
+        return self._synthetic.get(track_id)
+
     def prune_synthetic(
         self, active_track_ids: set[int], frame_idx: int, grace_frames: int = 12
     ) -> None:
@@ -340,7 +344,13 @@ class PersonHistory:
         return 0 if track is None else len(track.positions)
 
     def stillness(self, track_id: int) -> float | None:
-        """Max deviation from the median position in pixels, or ``None``."""
+        """How much a person drifts from their median position, in pixels.
+
+        The 75th percentile of the deviations is used instead of the maximum:
+        a single bad box (an arm swing, one noisy detection) should not make a
+        seated person look like they are walking, which used to make inferred
+        seats blink in and out.
+        """
         track = self._tracks.get(track_id)
         if track is None or len(track.positions) < 3:
             return None
@@ -348,4 +358,8 @@ class PersonHistory:
         ys = [p[1] for p in track.positions]
         mx = median(xs)
         my = median(ys)
-        return max(math.hypot(x - mx, y - my) for x, y in track.positions)
+        deviations = sorted(
+            math.hypot(x - mx, y - my) for x, y in track.positions
+        )
+        index = int(round(0.75 * (len(deviations) - 1)))
+        return deviations[index]

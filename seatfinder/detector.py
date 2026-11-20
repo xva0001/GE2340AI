@@ -69,7 +69,7 @@ class Detector:
         """Detect tracked objects of interest in a BGR frame."""
         kwargs: dict[str, object] = {
             "imgsz": self.cfg.imgsz,
-            "conf": min(self.cfg.conf, self.cfg.belonging_conf),
+            "conf": min(self.cfg.conf, self.cfg.belonging_conf, self.cfg.table_conf),
             "iou": self.cfg.iou,
             "max_det": self.cfg.max_det,
             "classes": list(TRACKED_CLASS_IDS),
@@ -92,6 +92,8 @@ class Detector:
 def _threshold(detection: Detection, cfg: DetectorConfig) -> float:
     if detection.class_id in BELONGING_CLASS_LABELS:
         return cfg.belonging_conf
+    if detection.class_id in CONTEXT_CLASS_LABELS:
+        return cfg.table_conf
     return cfg.conf
 
 
